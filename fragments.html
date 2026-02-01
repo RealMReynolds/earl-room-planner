@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fragments | A Time-Rewind Platformer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a0f;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+
+        #gameContainer {
+            position: relative;
+        }
+
+        #gameCanvas {
+            display: block;
+            border: 2px solid #1a1a2e;
+            box-shadow:
+                0 0 40px rgba(100, 100, 255, 0.1),
+                inset 0 0 100px rgba(0, 0, 0, 0.5);
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #888;
+            font-size: 14px;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+
+        #ui .label {
+            color: #555;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        #ui .value {
+            color: #c8a0ff;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        #timeBar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 300px;
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        #timeBarFill {
+            height: 100%;
+            background: linear-gradient(90deg, #4a9eff, #c8a0ff);
+            transition: width 0.1s;
+            box-shadow: 0 0 10px #4a9eff;
+        }
+
+        #rewindIndicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff6b6b;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 0 0 20px #ff6b6b;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+        }
+
+        #rewindIndicator.active {
+            opacity: 1;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #444;
+            font-size: 11px;
+            text-align: center;
+            pointer-events: none;
+        }
+
+        #emotionIndicator {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            text-align: right;
+            pointer-events: none;
+        }
+
+        #emotionIndicator .state {
+            font-size: 24px;
+            margin-bottom: 4px;
+        }
+
+        #emotionIndicator .label {
+            color: #555;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .fragment-count {
+            color: #ffd700;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+        }
+
+        /* Rewind visual overlay */
+        #rewindOverlay {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse at center, transparent 0%, rgba(100, 100, 255, 0.1) 100%);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        #rewindOverlay.active {
+            opacity: 1;
+        }
+
+        /* Scanlines for retro feel */
+        #scanlines {
+            position: absolute;
+            inset: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(0, 0, 0, 0.1) 0px,
+                rgba(0, 0, 0, 0.1) 1px,
+                transparent 1px,
+                transparent 2px
+            );
+            pointer-events: none;
+            opacity: 0.3;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="960" height="540"></canvas>
+
+        <div id="ui">
+            <div class="label">Memories</div>
+            <div class="value fragment-count"><span id="fragmentCount">0</span> / <span id="fragmentTotal">5</span></div>
+        </div>
+
+        <div id="emotionIndicator">
+            <div class="state" id="emotionEmoji">😐</div>
+            <div class="label" id="emotionLabel">NORMAL</div>
+        </div>
+
+        <div id="timeBar">
+            <div id="timeBarFill" style="width: 100%"></div>
+        </div>
+
+        <div id="rewindIndicator">◀◀ REWINDING ◀◀</div>
+
+        <div id="controls">
+            ARROW KEYS to move · SPACE to jump · HOLD SHIFT to rewind time
+        </div>
+
+        <div id="rewindOverlay"></div>
+        <div id="scanlines"></div>
+    </div>
+
+    <script>
+// =============================================================================
+// FRAGMENTS - A Time-Rewind Platformer
+// =============================================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// -----------------------------------------------------------------------------
+// CONFIGURATION
+// -----------------------------------------------------------------------------
+const CONFIG = {
+    TILE_SIZE: 32,
+    GRAVITY: 0.6,
+    JUMP_FORCE: -12,
+    MOVE_SPEED: 5,
+    MAX_TIME_HISTORY: 600, // 10 seconds at 60fps
+    FRICTION: 0.85,
+    AIR_RESISTANCE: 0.95
+};
+
+// -----------------------------------------------------------------------------
+// EMOTIONAL STATES
+// -----------------------------------------------------------------------------
+const EMOTIONS = {
+    NORMAL: {
+        name: 'NORMAL',
+        emoji: '😐',
+        color: '#88aacc',
+        jumpMod: 1,
+        speedMod: 1,
+        description: 'Balanced. Steady.'
+    },
+    HURT: {
+        name: 'HURT',
+        emoji: '😢',
+        color: '#6688aa',
+        jumpMod: 0.8,
+        speedMod: 0.7,
+        description: 'Heavy. Slower.'
+    },
+    NUMB: {
+        name: 'NUMB',
+        emoji: '😶',
+        color: '#888888',
+        jumpMod: 0.6,
+        speedMod: 0.5,
+        canPhase: true, // Can pass through certain platforms
+        description: 'Detached. Can phase through memories.'
+    },
+    HOPEFUL: {
+        name: 'HOPEFUL',
+        emoji: '🙂',
+        color: '#aaccff',
+        jumpMod: 1.3,
+        speedMod: 1.2,
+        description: 'Light. Elevated.'
+    }
+};
+
+// -----------------------------------------------------------------------------
+// GAME STATE
+// -----------------------------------------------------------------------------
+const game = {
+    player: null,
+    level: null,
+    fragments: [],
+    timeHistory: [],
+    isRewinding: false,
+    fragmentsCollected: 0,
+    currentEmotion: EMOTIONS.NORMAL,
+    particles: [],
+    camera: { x: 0, y: 0 },
+    ghostTrail: []
+};
+
+// -----------------------------------------------------------------------------
+// INPUT HANDLING
+// -----------------------------------------------------------------------------
+const keys = {
+    left: false,
+    right: false,
+    up: false,
+    jump: false,
+    rewind: false
+};
+
+document.addEventListener('keydown', (e) => {
+    switch(e.code) {
+        case 'ArrowLeft':
+        case 'KeyA':
+            keys.left = true;
+            break;
+        case 'ArrowRight':
+        case 'KeyD':
+            keys.right = true;
+            break;
+        case 'ArrowUp':
+        case 'KeyW':
+            keys.up = true;
+            break;
+        case 'Space':
+            keys.jump = true;
+            e.preventDefault();
+            break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+            keys.rewind = true;
+            e.preventDefault();
+            break;
+    }
+});
+
+document.addEventListener('keyup', (e) => {
+    switch(e.code) {
+        case 'ArrowLeft':
+        case 'KeyA':
+            keys.left = false;
+            break;
+        case 'ArrowRight':
+        case 'KeyD':
+            keys.right = false;
+            break;
+        case 'ArrowUp':
+        case 'KeyW':
+            keys.up = false;
+            break;
+        case 'Space':
+            keys.jump = false;
+            break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+            keys.rewind = false;
+            break;
+    }
+});
+
+// -----------------------------------------------------------------------------
+// PLAYER CLASS
+// -----------------------------------------------------------------------------
+class Player {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.width = 24;
+        this.height = 32;
+        this.vx = 0;
+        this.vy = 0;
+        this.onGround = false;
+        this.facingRight = true;
+        this.jumpHeld = false;
+    }
+
+    update() {
+        const emotion = game.currentEmotion;
+        const speed = CONFIG.MOVE_SPEED * emotion.speedMod;
+
+        // Horizontal movement
+        if (keys.left) {
+            this.vx -= speed * 0.3;
+            this.facingRight = false;
+        }
+        if (keys.right) {
+            this.vx += speed * 0.3;
+            this.facingRight = true;
+        }
+
+        // Clamp horizontal velocity
+        this.vx = Math.max(-speed, Math.min(speed, this.vx));
+
+        // Apply friction
+        if (this.onGround) {
+            this.vx *= CONFIG.FRICTION;
+        } else {
+            this.vx *= CONFIG.AIR_RESISTANCE;
+        }
+
+        // Jumping
+        if (keys.jump && this.onGround && !this.jumpHeld) {
+            this.vy = CONFIG.JUMP_FORCE * emotion.jumpMod;
+            this.onGround = false;
+            this.jumpHeld = true;
+            spawnJumpParticles(this.x + this.width/2, this.y + this.height);
+        }
+        if (!keys.jump) {
+            this.jumpHeld = false;
+        }
+
+        // Variable jump height - release early for shorter jump
+        if (!keys.jump && this.vy < 0) {
+            this.vy *= 0.5;
+        }
+
+        // Gravity
+        this.vy += CONFIG.GRAVITY;
+        this.vy = Math.min(this.vy, 15); // Terminal velocity
+
+        // Apply movement
+        this.x += this.vx;
+        this.y += this.vy;
+
+        // Collision detection
+        this.handleCollisions();
+
+        // Keep in bounds
+        this.x = Math.max(0, Math.min(this.x, game.level.width * CONFIG.TILE_SIZE - this.width));
+
+        // Fall death
+        if (this.y > game.level.height * CONFIG.TILE_SIZE + 100) {
+            this.respawn();
+        }
+    }
+
+    handleCollisions() {
+        const tileSize = CONFIG.TILE_SIZE;
+        this.onGround = false;
+
+        // Get tiles player might be touching
+        const left = Math.floor(this.x / tileSize);
+        const right = Math.floor((this.x + this.width) / tileSize);
+        const top = Math.floor(this.y / tileSize);
+        const bottom = Math.floor((this.y + this.height) / tileSize);
+
+        for (let ty = top; ty <= bottom; ty++) {
+            for (let tx = left; tx <= right; tx++) {
+                const tile = getTile(tx, ty);
+
+                if (tile === 1) { // Solid tile
+                    const tileRect = {
+                        x: tx * tileSize,
+                        y: ty * tileSize,
+                        width: tileSize,
+                        height: tileSize
+                    };
+
+                    if (this.intersects(tileRect)) {
+                        this.resolveCollision(tileRect);
+                    }
+                } else if (tile === 2 && !game.currentEmotion.canPhase) {
+                    // Platform - only solid from above, unless NUMB
+                    const tileRect = {
+                        x: tx * tileSize,
+                        y: ty * tileSize,
+                        width: tileSize,
+                        height: tileSize
+                    };
+
+                    // Only collide if falling down onto it
+                    if (this.vy > 0 && this.y + this.height - this.vy <= tileRect.y) {
+                        if (this.x + this.width > tileRect.x && this.x < tileRect.x + tileRect.width) {
+                            this.y = tileRect.y - this.height;
+                            this.vy = 0;
+                            this.onGround = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    intersects(rect) {
+        return this.x < rect.x + rect.width &&
+               this.x + this.width > rect.x &&
+               this.y < rect.y + rect.height &&
+               this.y + this.height > rect.y;
+    }
+
+    resolveCollision(rect) {
+        const overlapX = Math.min(this.x + this.width - rect.x, rect.x + rect.width - this.x);
+        const overlapY = Math.min(this.y + this.height - rect.y, rect.y + rect.height - this.y);
+
+        if (overlapX < overlapY) {
+            // Horizontal collision
+            if (this.x + this.width/2 < rect.x + rect.width/2) {
+                this.x = rect.x - this.width;
+            } else {
+                this.x = rect.x + rect.width;
+            }
+            this.vx = 0;
+        } else {
+            // Vertical collision
+            if (this.y + this.height/2 < rect.y + rect.height/2) {
+                this.y = rect.y - this.height;
+                this.vy = 0;
+                this.onGround = true;
+            } else {
+                this.y = rect.y + rect.height;
+                this.vy = 0;
+            }
+        }
+    }
+
+    respawn() {
+        this.x = game.level.spawn.x * CONFIG.TILE_SIZE;
+        this.y = game.level.spawn.y * CONFIG.TILE_SIZE;
+        this.vx = 0;
+        this.vy = 0;
+    }
+
+    getState() {
+        return {
+            x: this.x,
+            y: this.y,
+            vx: this.vx,
+            vy: this.vy,
+            onGround: this.onGround,
+            facingRight: this.facingRight
+        };
+    }
+
+    setState(state) {
+        this.x = state.x;
+        this.y = state.y;
+        this.vx = state.vx;
+        this.vy = state.vy;
+        this.onGround = state.onGround;
+        this.facingRight = state.facingRight;
+    }
+
+    draw() {
+        const emotion = game.currentEmotion;
+
+        // Body
+        ctx.fillStyle = emotion.color;
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+
+        // Simple face direction indicator
+        ctx.fillStyle = '#fff';
+        const eyeX = this.facingRight ? this.x + 16 : this.x + 4;
+        ctx.fillRect(eyeX, this.y + 8, 4, 4);
+
+        // Glow effect
+        ctx.shadowColor = emotion.color;
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+        ctx.shadowBlur = 0;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// FRAGMENT (Collectible) CLASS
+// -----------------------------------------------------------------------------
+class Fragment {
+    constructor(x, y, id) {
+        this.x = x * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE/2;
+        this.y = y * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE/2;
+        this.radius = 8;
+        this.collected = false;
+        this.id = id;
+        this.bobOffset = Math.random() * Math.PI * 2;
+        this.pulsePhase = 0;
+
+        // Time-immune: fragments don't rewind
+        this.timeImmune = true;
+    }
+
+    update() {
+        this.pulsePhase += 0.05;
+
+        if (!this.collected) {
+            // Check collection
+            const dx = (game.player.x + game.player.width/2) - this.x;
+            const dy = (game.player.y + game.player.height/2) - this.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+
+            if (dist < this.radius + 20) {
+                this.collect();
+            }
+        }
+    }
+
+    collect() {
+        this.collected = true;
+        game.fragmentsCollected++;
+        updateUI();
+
+        // Spawn collection particles
+        for (let i = 0; i < 20; i++) {
+            game.particles.push(new Particle(
+                this.x,
+                this.y,
+                (Math.random() - 0.5) * 8,
+                (Math.random() - 0.5) * 8,
+                '#ffd700',
+                30 + Math.random() * 30
+            ));
+        }
+
+        // Maybe change emotion based on fragments collected
+        updateEmotion();
+    }
+
+    draw() {
+        if (this.collected) return;
+
+        const bob = Math.sin(this.pulsePhase + this.bobOffset) * 4;
+        const pulse = 1 + Math.sin(this.pulsePhase * 2) * 0.2;
+
+        // Glow
+        ctx.beginPath();
+        ctx.arc(this.x, this.y + bob, this.radius * 2 * pulse, 0, Math.PI * 2);
+        const gradient = ctx.createRadialGradient(
+            this.x, this.y + bob, 0,
+            this.x, this.y + bob, this.radius * 2 * pulse
+        );
+        gradient.addColorStop(0, 'rgba(255, 215, 0, 0.3)');
+        gradient.addColorStop(1, 'rgba(255, 215, 0, 0)');
+        ctx.fillStyle = gradient;
+        ctx.fill();
+
+        // Core - diamond shape
+        ctx.save();
+        ctx.translate(this.x, this.y + bob);
+        ctx.rotate(this.pulsePhase * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(0, -this.radius * pulse);
+        ctx.lineTo(this.radius * pulse * 0.7, 0);
+        ctx.lineTo(0, this.radius * pulse);
+        ctx.lineTo(-this.radius * pulse * 0.7, 0);
+        ctx.closePath();
+        ctx.fillStyle = '#ffd700';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+// -----------------------------------------------------------------------------
+// PARTICLE CLASS
+// -----------------------------------------------------------------------------
+class Particle {
+    constructor(x, y, vx, vy, color, life) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.color = color;
+        this.life = life;
+        this.maxLife = life;
+        this.size = 3 + Math.random() * 3;
+    }
+
+    update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.vy += 0.1; // Gravity
+        this.life--;
+        return this.life > 0;
+    }
+
+    draw() {
+        const alpha = this.life / this.maxLife;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+        ctx.globalAlpha = 1;
+    }
+}
+
+function spawnJumpParticles(x, y) {
+    for (let i = 0; i < 8; i++) {
+        game.particles.push(new Particle(
+            x + (Math.random() - 0.5) * 20,
+            y,
+            (Math.random() - 0.5) * 4,
+            Math.random() * -2,
+            '#aaaaaa',
+            20 + Math.random() * 20
+        ));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LEVEL DATA
+// -----------------------------------------------------------------------------
+// 0 = empty, 1 = solid, 2 = platform (pass-through from below), 3 = fragment spawn
+const LEVEL_1 = {
+    name: "The Beginning",
+    spawn: { x: 2, y: 12 },
+    width: 30,
+    height: 17,
+    tiles: [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0,0,0,2,2,2,2,0,0,3,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1],
+        [1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ],
+    fragments: [] // Will be populated from tile data
+};
+
+function loadLevel(levelData) {
+    game.level = levelData;
+    game.fragments = [];
+    game.fragmentsCollected = 0;
+
+    // Find fragment positions from tile data
+    let fragmentId = 0;
+    for (let y = 0; y < levelData.tiles.length; y++) {
+        for (let x = 0; x < levelData.tiles[y].length; x++) {
+            if (levelData.tiles[y][x] === 3) {
+                game.fragments.push(new Fragment(x, y, fragmentId++));
+                levelData.tiles[y][x] = 0; // Clear the spawn marker
+            }
+        }
+    }
+
+    document.getElementById('fragmentTotal').textContent = game.fragments.length;
+
+    // Create player
+    game.player = new Player(
+        levelData.spawn.x * CONFIG.TILE_SIZE,
+        levelData.spawn.y * CONFIG.TILE_SIZE
+    );
+
+    // Reset time
+    game.timeHistory = [];
+    game.currentEmotion = EMOTIONS.NORMAL;
+    updateUI();
+}
+
+function getTile(x, y) {
+    if (y < 0 || y >= game.level.tiles.length) return 1;
+    if (x < 0 || x >= game.level.tiles[0].length) return 1;
+    return game.level.tiles[y][x];
+}
+
+// -----------------------------------------------------------------------------
+// TIME SYSTEM
+// -----------------------------------------------------------------------------
+function recordTime() {
+    const state = {
+        player: game.player.getState(),
+        fragments: game.fragments.map(f => ({ collected: f.collected })),
+        emotion: game.currentEmotion
+    };
+
+    game.timeHistory.push(state);
+
+    // Limit history
+    if (game.timeHistory.length > CONFIG.MAX_TIME_HISTORY) {
+        game.timeHistory.shift();
+    }
+}
+
+function rewindTime() {
+    if (game.timeHistory.length > 0) {
+        const state = game.timeHistory.pop();
+        game.player.setState(state.player);
+
+        // Note: Fragments are TIME-IMMUNE - they don't rewind!
+        // This is a key Braid mechanic - some things persist through time
+
+        // Add ghost trail effect
+        game.ghostTrail.push({
+            x: state.player.x,
+            y: state.player.y,
+            alpha: 0.5,
+            width: game.player.width,
+            height: game.player.height
+        });
+
+        // Limit ghost trail
+        if (game.ghostTrail.length > 20) {
+            game.ghostTrail.shift();
+        }
+
+        // Spawn rewind particles
+        if (Math.random() < 0.3) {
+            game.particles.push(new Particle(
+                game.player.x + game.player.width/2,
+                game.player.y + game.player.height/2,
+                (Math.random() - 0.5) * 3,
+                (Math.random() - 0.5) * 3,
+                '#4a9eff',
+                20
+            ));
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// EMOTION SYSTEM
+// -----------------------------------------------------------------------------
+function updateEmotion() {
+    const total = game.fragments.length;
+    const collected = game.fragmentsCollected;
+    const ratio = collected / total;
+
+    if (ratio === 0) {
+        game.currentEmotion = EMOTIONS.NORMAL;
+    } else if (ratio < 0.4) {
+        game.currentEmotion = EMOTIONS.HURT;
+    } else if (ratio < 0.7) {
+        game.currentEmotion = EMOTIONS.NUMB;
+    } else {
+        game.currentEmotion = EMOTIONS.HOPEFUL;
+    }
+
+    updateUI();
+}
+
+// -----------------------------------------------------------------------------
+// UI
+// -----------------------------------------------------------------------------
+function updateUI() {
+    document.getElementById('fragmentCount').textContent = game.fragmentsCollected;
+    document.getElementById('emotionEmoji').textContent = game.currentEmotion.emoji;
+    document.getElementById('emotionLabel').textContent = game.currentEmotion.name;
+
+    // Time bar
+    const timePercent = (game.timeHistory.length / CONFIG.MAX_TIME_HISTORY) * 100;
+    document.getElementById('timeBarFill').style.width = timePercent + '%';
+}
+
+// -----------------------------------------------------------------------------
+// RENDERING
+// -----------------------------------------------------------------------------
+function draw() {
+    // Clear
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw tiles
+    const tileSize = CONFIG.TILE_SIZE;
+    for (let y = 0; y < game.level.tiles.length; y++) {
+        for (let x = 0; x < game.level.tiles[y].length; x++) {
+            const tile = game.level.tiles[y][x];
+
+            if (tile === 1) {
+                // Solid tile
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(x * tileSize, y * tileSize, tileSize, tileSize);
+
+                // Highlight
+                ctx.fillStyle = '#252540';
+                ctx.fillRect(x * tileSize, y * tileSize, tileSize, 2);
+                ctx.fillRect(x * tileSize, y * tileSize, 2, tileSize);
+            } else if (tile === 2) {
+                // Platform
+                ctx.fillStyle = game.currentEmotion.canPhase ? '#333344' : '#3a3a5e';
+                ctx.fillRect(x * tileSize, y * tileSize, tileSize, 8);
+
+                if (game.currentEmotion.canPhase) {
+                    // Dashed appearance when can phase through
+                    ctx.setLineDash([4, 4]);
+                    ctx.strokeStyle = '#5555aa';
+                    ctx.strokeRect(x * tileSize + 2, y * tileSize + 2, tileSize - 4, 4);
+                    ctx.setLineDash([]);
+                }
+            }
+        }
+    }
+
+    // Draw ghost trail (rewind effect)
+    game.ghostTrail.forEach((ghost, i) => {
+        ghost.alpha -= 0.02;
+        if (ghost.alpha > 0) {
+            ctx.globalAlpha = ghost.alpha * 0.3;
+            ctx.fillStyle = '#4a9eff';
+            ctx.fillRect(ghost.x, ghost.y, ghost.width, ghost.height);
+        }
+    });
+    game.ghostTrail = game.ghostTrail.filter(g => g.alpha > 0);
+    ctx.globalAlpha = 1;
+
+    // Draw fragments
+    game.fragments.forEach(f => f.draw());
+
+    // Draw particles
+    game.particles.forEach(p => p.draw());
+
+    // Draw player
+    game.player.draw();
+
+    // Rewind overlay tint
+    if (game.isRewinding) {
+        ctx.fillStyle = 'rgba(74, 158, 255, 0.05)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// GAME LOOP
+// -----------------------------------------------------------------------------
+function update() {
+    if (keys.rewind && game.timeHistory.length > 0) {
+        // REWINDING
+        game.isRewinding = true;
+        rewindTime();
+        document.getElementById('rewindIndicator').classList.add('active');
+        document.getElementById('rewindOverlay').classList.add('active');
+    } else {
+        // NORMAL TIME
+        game.isRewinding = false;
+        document.getElementById('rewindIndicator').classList.remove('active');
+        document.getElementById('rewindOverlay').classList.remove('active');
+
+        // Record current state
+        recordTime();
+
+        // Update player
+        game.player.update();
+
+        // Update fragments
+        game.fragments.forEach(f => f.update());
+    }
+
+    // Always update particles
+    game.particles = game.particles.filter(p => p.update());
+
+    // Update UI
+    updateUI();
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// -----------------------------------------------------------------------------
+// INIT
+// -----------------------------------------------------------------------------
+loadLevel(LEVEL_1);
+gameLoop();
+
+console.log('%c FRAGMENTS ', 'background: #4a9eff; color: #000; font-weight: bold; padding: 4px 8px;');
+console.log('A time-rewind platformer');
+console.log('Controls: Arrow keys to move, Space to jump, Hold Shift to rewind');
+    </script>
+</body>
+</html>
